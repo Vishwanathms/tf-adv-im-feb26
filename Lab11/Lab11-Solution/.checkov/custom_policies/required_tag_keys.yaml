@@ -1,0 +1,19 @@
+metadata:
+  name: "Require Owner and Environment tags"
+  id: "CKV_LAB_002"
+  category: "CONVENTION"
+
+definition:
+  and:
+    - cond_type: attribute
+      resource_types:
+        - aws_s3_bucket
+        - aws_security_group
+      attribute: "tags.Owner"
+      operator: "exists"
+    - cond_type: attribute
+      resource_types:
+        - aws_s3_bucket
+        - aws_security_group
+      attribute: "tags.Environment"
+      operator: "exists"

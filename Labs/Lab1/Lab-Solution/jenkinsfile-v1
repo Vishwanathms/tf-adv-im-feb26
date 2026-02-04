@@ -1,0 +1,134 @@
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+  }
+
+  environment {
+    AWS_REGION = 'us-east-1'
+    TF_IN_AUTOMATION = 'true'
+    TF_INPUT = 'false'
+    // Jenkins credential ID that stores AWS access key + secret key
+    AWS_CREDS = 'aws-creds'
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        cleanWs()
+        checkout scm
+      }
+    }
+
+    stage('Detect Context') {
+      steps {
+        script {
+          // Jenkins sets these for multibranch/PR builds.
+          env.IS_PR = (env.CHANGE_ID ? "true" : "false")
+
+          // Map branch → environment folder
+          // PR and feature branches do NOT deploy.
+          if (env.IS_PR == "true") {
+            env.TARGET_ENV = "none"
+          } else if (env.BRANCH_NAME == "dev") {
+            env.TARGET_ENV = "dev"
+          } else if (env.BRANCH_NAME == "staging") {
+            env.TARGET_ENV = "staging"
+          } else if (env.BRANCH_NAME == "main") {
+            env.TARGET_ENV = "prod"
+          } else if (env.BRANCH_NAME.startsWith("feature/")) {
+            env.TARGET_ENV = "none"
+          } else {
+            env.TARGET_ENV = "none"
+          }
+
+          echo "BRANCH_NAME=${env.BRANCH_NAME}, IS_PR=${env.IS_PR}, TARGET_ENV=${env.TARGET_ENV}"
+        }
+      }
+    }
+
+    stage('Terraform Format') {
+      steps {
+        sh 'terraform fmt -check -recursive'
+      }
+    }
+
+    stage('PR / Feature Validation (No Backend)') {
+      when {
+        expression { return env.IS_PR == "true" || env.BRANCH_NAME.startsWith("feature/") }
+      }
+      steps {
+        // No backend init and no lock during PR validation
+        dir('envs/dev') {
+          sh '''
+            terraform init -backend=false
+            terraform validate
+            terraform plan -lock=false -out=tfplan
+          '''
+        }
+      }
+    }
+
+    stage('Init + Validate + Plan (With Backend)') {
+      when {
+        expression { return env.TARGET_ENV != "none" }
+      }
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${AWS_CREDS}",
+          usernameVariable: 'AWS_ACCESS_KEY_ID',
+          passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+        )]) {
+          dir("envs/${TARGET_ENV}") {
+            sh '''
+              aws sts get-caller-identity
+              terraform init
+              terraform validate
+              terraform plan -out=tfplan
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Approval Gate (Production only)') {
+      when {
+        expression { return env.TARGET_ENV == "prod" }
+      }
+      steps {
+        input message: "Approve PRODUCTION deployment from branch '${env.BRANCH_NAME}'?"
+      }
+    }
+
+    stage('Apply') {
+      when {
+        expression { return env.TARGET_ENV != "none" }
+      }
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${AWS_CREDS}",
+          usernameVariable: 'AWS_ACCESS_KEY_ID',
+          passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+        )]) {
+          dir("envs/${TARGET_ENV}") {
+            sh '''
+              terraform apply -auto-approve tfplan
+            '''
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      echo "Pipeline finished. TARGET_ENV=${env.TARGET_ENV}"
+    }
+    failure {
+      echo "Pipeline failed. Check: backend access, credentials, or state lock."
+    }
+  }
+}

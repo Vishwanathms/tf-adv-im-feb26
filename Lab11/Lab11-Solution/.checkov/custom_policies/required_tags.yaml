@@ -1,0 +1,12 @@
+metadata:
+  name: "Require standard tags on AWS resources"
+  id: "CKV_LAB_001"
+  category: "CONVENTION"
+
+definition:
+  cond_type: "attribute"
+  resource_types:
+    - "aws_s3_bucket"
+    - "aws_security_group"
+  attribute: "tags"
+  operator: "exists"
